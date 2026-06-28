@@ -27,7 +27,7 @@ That one line walks `raw/`, mirrors the folder tree into `converted/`, exports e
 ## Install
 
 ```stata
-net install convertanything, from("https://raw.githubusercontent.com/ericbooth/convertanything-stata/master/") replace
+net install convertanything, from("https://raw.githubusercontent.com/ericabooth/convertanything-stata/master/") replace
 which convertanything
 help convertanything
 ```
