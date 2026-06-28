@@ -27,10 +27,10 @@ That one line walks `raw/`, mirrors the folder tree into `converted/`, exports e
 ## Install
 
 ```stata
-net install convertanything, from("https://raw.githubusercontent.com/ericabooth/convertanything-stata-public/main/")
+net install convertanything, from("https://raw.githubusercontent.com/ericbooth/convertanything-stata/master/") replace
+which convertanything
+help convertanything
 ```
-
-Or drop `convertanything.ado` and `convertanything.sthlp` anywhere on your Stata `adopath`.
 
 Requires Stata 16+.
 
@@ -99,6 +99,6 @@ See `help convertanything` after install for the full reference.
 
 ## Author
 
-Eric A. Booth · Texas 2036 · [eric.a.booth@gmail.com](mailto:eric.a.booth@gmail.com) · [@ericabooth](https://github.com/ericabooth)
+Eric A. Booth, Sr Researcher, Texas2036.org (eric.a.booth@gmail.com).
 
 Issues and PRs welcome.
