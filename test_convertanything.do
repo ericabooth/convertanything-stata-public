@@ -1,5 +1,5 @@
 *==============================================================================*
-* test_convertanything.do -- test battery for convertanything 1.3
+* test_convertanything.do -- test battery for convertanything 1.3.1
 *
 * Run:  stata-mp -b do test_convertanything.do ["/path/to/pkg" ["/work/dir"]]
 *   arg 1: folder holding convertanything.ado (default: found on the adopath)
@@ -732,6 +732,125 @@ assert id == 1 & id_2 == 2
 use "`root'/o27/b.dta", clear
 assert id_2 == 1 & id == 2
 di as res "TEST 27 OK: cleannames suffix goes to the renamed variable (id then ID -> id, id_2)"
+
+*--- (28) the stray-quote rule for text files (1.3.1) ------------------------*
+* Text files are read with bindquote(strict).  When a cell has a line break
+* and a later line of that cell looks like a data row (at least k-1
+* delimiters; for k <= 2 also an id-like leading token), a stray quote joined
+* rows: a WARNING note names the cell and the loose result is kept.
+* Otherwise strict is kept silently.  strictquotes forces strict binding.
+local s28 "`root'/quotes"
+mkdir "`s28'"
+local q = char(34)
+* (a) a legitimate multi-line survey answer: one row, no note, one import
+file open h using "`s28'/ml.csv", write replace
+file write h "id,answer,score" _n `"1,"I liked it."' _n `"Then, less so.",10"' _n "2,ok,20" _n
+file close h
+local lg "`root'/l28a.log"
+log using "`lg'", text replace name(t28a)
+convertanything using "`s28'/ml.csv", replace clear
+log close t28a
+use "`s28'/ml.dta", clear
+assert _N == 2 & score[2] == 20
+assert answer[1] == "I liked it." + char(10) + "Then, less so."
+local t "WARNING"
+mata: assert(!cat_inlog("lg", "t"))
+local t "line breaks"
+mata: assert(!cat_inlog("lg", "t"))
+* (b) a stray inch mark: WARNING note naming the cell and both row counts,
+*     loose rows kept
+file open h using "`s28'/inch.csv", write replace
+file write h "id,desc,n" _n "1,5" `"""' " screen,10" _n "2,ok,20" _n "3,fine,30" _n
+file close h
+quietly import delimited using "`s28'/inch.csv", bindquote(strict) maxquotedrows(unlimited) clear
+assert _N == 1
+local lg "`root'/l28b.log"
+log using "`lg'", text replace name(t28b)
+convertanything using "`s28'/inch.csv", replace clear
+log close t28b
+use "`s28'/inch.dta", clear
+assert _N == 3 & n[3] == 30 & desc[2] == "ok"
+local t "WARNING: stray-quote check: in the strict read, the quoted cell in row 1, column desc"
+mata: assert(cat_inlog("lg", "t"))
+local t "strict quote binding read 1 row(s), loose binding read 3 row(s); the loose result is used"
+mata: assert(cat_inlog("lg", "t"))
+* strictquotes: strict binding, no fallback, no note
+local lg "`root'/l28c.log"
+log using "`lg'", text replace name(t28c)
+convertanything using "`s28'/inch.csv", replace clear strictquotes
+log close t28c
+use "`s28'/inch.dta", clear
+assert _N == 1
+local t "WARNING"
+mata: assert(!cat_inlog("lg", "t"))
+* (c) both in one file: the stray-quote warning wins (documented); the loose
+*     result is kept, so the multi-line answer splits too
+file open h using "`s28'/both.csv", write replace
+file write h "id,answer,score" _n `"1,"line one"' _n `"line two",10"' _n
+file write h "2,5" `"""' " screen,20" _n "3,fine,30" _n "4,ok,40" _n
+file close h
+quietly import delimited using "`s28'/both.csv", clear
+local nloose = _N
+local lg "`root'/l28d.log"
+log using "`lg'", text replace name(t28d)
+convertanything using "`s28'/both.csv", replace clear
+log close t28d
+use "`s28'/both.dta", clear
+assert _N == `nloose'
+local t "in the strict read, the quoted cell in row 2, column answer"
+mata: assert(cat_inlog("lg", "t"))
+* (d) a clean file: no note, and the fast path imports it once
+file open h using "`s28'/clean.csv", write replace
+file write h "id,answer" _n "1,plain" _n "2,also plain" _n
+file close h
+local lg "`root'/l28e.log"
+log using "`lg'", text replace name(t28e)
+convertanything using "`s28'/clean.csv", replace clear
+log close t28e
+local t "WARNING"
+mata: assert(!cat_inlog("lg", "t"))
+* (e) tab-delimited variants: a second line with two commas is text in a tab
+*     file (k = 3, but its delimiter is the tab); a stray inch mark warns
+file open h using "`s28'/mltab.tab", write replace
+file write h "id" _tab "answer" _tab "score" _n "1" _tab `""one, two, three"' _n
+file write h `"four, five, six""' _tab "10" _n "2" _tab "ok" _tab "20" _n
+file close h
+local lg "`root'/l28f.log"
+log using "`lg'", text replace name(t28f)
+convertanything using "`s28'/mltab.tab", replace clear
+log close t28f
+use "`s28'/mltab.dta", clear
+assert _N == 2 & answer[1] == "one, two, three" + char(10) + "four, five, six"
+local t "WARNING"
+mata: assert(!cat_inlog("lg", "t"))
+file open h using "`s28'/inchtab.txt", write replace
+file write h "id" _tab "desc" _tab "n" _n "1" _tab "5" `"""' " screen" _tab "10" _n
+file write h "2" _tab "ok" _tab "20" _n "3" _tab "fine" _tab "30" _n
+file close h
+local lg "`root'/l28g.log"
+log using "`lg'", text replace name(t28g)
+convertanything using "`s28'/inchtab.txt", replace clear
+log close t28g
+use "`s28'/inchtab.dta", clear
+assert _N == 3 & n[3] == 30
+local t "strict quote binding read 1 row(s), loose binding read 3 row(s)"
+mata: assert(cat_inlog("lg", "t"))
+* (f) the private helper itself: status and number of imports.  Running the
+*     ado-file defines it for this do-file (discard first).
+discard
+quietly run "$pkgroot/convertanything.ado"
+_cva_qguard "`s28'/clean.csv", varnames(1)
+assert "`qg_status'" == "clean" & `qg_nread' == 1 & _N == 2
+_cva_qguard "`s28'/ml.csv", varnames(1)
+assert "`qg_status'" == "multiline" & `qg_nread' == 1 & _N == 2
+quietly _cva_qguard "`s28'/inch.csv", varnames(1)
+assert "`qg_status'" == "stray" & `qg_nread' == 2 & _N == 3
+assert `qg_nstrict' == 1 & `qg_nloose' == 3 & "`qg_obs'" == "1" & "`qg_var'" == "desc"
+_cva_qguard "`s28'/inch.csv", varnames(1) strictquotes
+assert "`qg_status'" == "forced" & `qg_nread' == 1 & _N == 1
+_cva_qguard "`s28'/mltab.tab", varnames(1)
+assert "`qg_status'" == "multiline" & _N == 2
+di as res "TEST 28 OK: stray-quote rule (multi-line kept, stray quote warned, both, clean, tab)"
 
 * ----- cleanup (Stata/Mata only) ----------------------------------------------
 clear

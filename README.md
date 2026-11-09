@@ -2,7 +2,7 @@
 
 **One Stata command to turn a folder of mixed-format files into `.dta` datasets.**
 
-Version 1.3 (9 November 2026).
+Version 1.3.1 (9 November 2026).
 
 `convertanything` picks the right importer for each file (`import delimited`, `import excel`, `use`, `infile`) and saves the result as a `.dta`. Point it at a single file, a folder, or a whole nested tree.
 
@@ -26,7 +26,7 @@ That line walks `raw/`, mirrors its folder tree into `converted/`, saves every E
   - **Header row.** The first row is the header, even when every column is text. If every field of the first row is a number, the file is read as having no header (`v1`, `v2`, ...). Uncertain cases (some numbers and some text, empty or quoted fields, uneven rows) keep the first row as names and say so. `firstrow` forces a header (years as column names); `nofirstrow` forces none.
   - **Code columns.** Columns of zero-padded codes (`00501`, `001`, `01`) stay text instead of becoming 501, 1, 1, even without `destring`.
 
-  Quoted fields may contain line breaks.
+  Quoted fields may contain line breaks. A stray unmatched quote (an inch mark, as in `1,5" screen,10`) is caught by the stray-quote rule below.
 - **Handles awkward paths.** Spaces, `$`, and backquotes in file, folder, and sheet names are fine. On Windows, backslash paths work and `saving("C:\out\")` is safe. A leading `~` is expanded from your home folder.
 - **Ignores clutter.** Extensions match without regard to case (`FILE.CSV`). macOS `._*` files and Excel lock files (`~$*.xls`, `~$*.xlsx`, `~$*.xlsm`) are ignored; other `~$` files, such as `~$notes.csv`, are converted. `_converted/` and `_archive/` are skipped by default in recursive mode.
 
@@ -100,6 +100,7 @@ convertanything using "by_year.csv", firstrow replace clear
 | `nofirstrow` | The first row is data, not variable names (Excel and text files). Turns off the header check. |
 | `firstrow` | Text files: the first row is variable names even if every field is a number. Turns off the header check. Cannot be combined with `nofirstrow`. |
 | `encoding(name)` | Encoding of csv/txt/tab files. Default `utf-8`; without `encoding()`, a file that is not valid UTF-8 is read as `latin1` or `windows-1252` with a note. A given `encoding()` is always used. |
+| `strictquotes` | Text files: skip the stray-quote rule and keep strict quote binding, with no fallback (a file strict binding cannot read fails). |
 | `cleannames` | Lowercase, Stata-legal, unique variable names. A name that is already clean is kept; the variable that must be renamed gets the suffix. With `id` then `ID`, the later `ID` becomes `id_2`; with `ID` then `id`, the earlier `ID` becomes `id_2`. |
 | `destring` | Convert numeric-looking text to numbers, removing `$` and thousands commas. Text with a leading zero (`00123`) or more than 15 digits is kept as text, and so is text with odd commas (`1,5`) or `%` on only some values. Columns where every value ends in `%` are divided by 100. Prints what it converted and what it kept. (Zero-padded code columns of text files stay text even without `destring`.) |
 | `compress` | `compress` before saving. |
@@ -133,9 +134,21 @@ See `help convertanything` for the full reference, including the naming rules, t
 - **Folder mode returns 0** when it has finished, even if some files failed; check `r(N_failed)`. For a single file, a file that is not converted is an error.
 - **Memory** holds the last dataset read when the command ends.
 - **`.raw` files** must start with a Stata dictionary (read with `infile using`) or be a rectangle of values separated by blanks, tabs or commas (read free-format as `v1`, `v2`, ..., numeric where every value is a number). Fixed-column data without a dictionary, ragged rows and empty files are reported as failed (r(610)) with a reason.
+- **Stray quotes.** Text files are read with `bindquote(strict)`, so a quoted field may contain the delimiter or a line break. Strict binding also treats one stray unmatched double quote (an inch mark, as in `1,5" screen,10`) as the start of a quoted field, so later rows can fold into one cell with no error. Unless `strictquotes` is given, `convertanything` applies one rule, shared with `combineall` and `cxchangelog`:
+  - If no string cell contains a line break, the strict result is kept (one read of the file, nothing printed).
+  - Otherwise each cell with a line break is split at its line breaks. A line after the first looks like a data row when it holds at least k-1 delimiters, where k is the number of columns of the strict read and the delimiter is the one of comma, tab, semicolon, or pipe that splits the file's first line into k fields. When k <= 2, the line must also start with an id-like token (digits, optionally after up to four letters and a `_` or `-`, such as `17`, `Q12`, `id_003`, or `2024-001`), and the file's first column must hold such values.
+  - If any line looks like a data row, a `WARNING` note names the file, the row and column of the strict read where the joined cell starts, and the strict and loose row counts, and the loose result is saved. Every row survives, but the cell holding the stray quote runs to the end of its line, so repair that line upstream.
+  - If none does, the line breaks are genuine multi-line text: the strict result is kept and nothing is printed.
+
+  A file with both a genuine multi-line field and a stray quote gets the warning and the loose result (the stray-quote reading wins, so the multi-line field splits too). A genuine multi-line field whose later line happens to hold k-1 delimiters (two commas in a three-column file) is also read as a stray quote; use `strictquotes` for such a file.
 - **Large text files** are scanned for encoding and code columns in their first 64 MB; give `encoding()` or `destring` to be safe with bigger files.
 
 ---
+
+## Changes in version 1.3.1
+
+- Text files follow the stray-quote rule above. In 1.3 a stray unmatched quote silently merged the rows after it into one cell, and the only sign was a note that some rows had line breaks inside quoted fields; that note is gone, genuine multi-line fields are kept silently, and a stray quote gets a `WARNING` note and the loose result.
+- New option `strictquotes` keeps strict binding with no fallback.
 
 ## Changes from version 1.2
 
@@ -154,7 +167,7 @@ Calls written for 1.2 run unchanged, but results can differ. In short (the help 
 
 ## Testing
 
-`test_convertanything.do` builds its fixtures in a scratch folder, runs 27 tests, and removes the folder again, using only Stata and Mata (no shell commands). Tests 22 to 27 cover the header check, encoding detection, reruns over 1.2 outputs, code columns, lock files and `cleannames` order. It passes on Stata 16.1 and StataNow 19.5:
+`test_convertanything.do` builds its fixtures in a scratch folder, runs 28 tests, and removes the folder again, using only Stata and Mata (no shell commands). Tests 22 to 28 cover the header check, encoding detection, reruns over 1.2 outputs, code columns, lock files, `cleannames` order, and the stray-quote rule (multi-line answer, stray inch mark, both in one file, clean file, tab-delimited files). It passes on Stata 16.1 and StataNow 19.5:
 
 ```stata
 do test_convertanything.do "/path/to/package" "/path/to/scratch"

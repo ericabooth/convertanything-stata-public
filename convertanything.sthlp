@@ -1,5 +1,5 @@
 {smcl}
-{* *! version 1.3  09nov2026  Author: Eric A. Booth}{...}
+{* *! version 1.3.1  09nov2026  Author: Eric A. Booth}{...}
 {vieweralsosee "[D] import delimited" "help import delimited"}{...}
 {vieweralsosee "[D] import excel" "help import excel"}{...}
 {vieweralsosee "[D] infile (free format)" "help infile1"}{...}
@@ -9,6 +9,7 @@
 {viewerjumpto "Description" "convertanything##description"}{...}
 {viewerjumpto "Options" "convertanything##options"}{...}
 {viewerjumpto "Remarks: text files" "convertanything##text"}{...}
+{viewerjumpto "Remarks: stray quotes" "convertanything##quotes"}{...}
 {viewerjumpto "Remarks: other file types" "convertanything##types"}{...}
 {viewerjumpto "Remarks: output names and replace" "convertanything##names"}{...}
 {viewerjumpto "Remarks: what is skipped" "convertanything##skiprules"}{...}
@@ -51,6 +52,7 @@ current folder ({cmd:.}).
 {synopt:{opt nofirst:row}}the first row is data, not variable names (text and Excel files){p_end}
 {synopt:{opt first:row}}text files: the first row is variable names, even if it holds only numbers{p_end}
 {synopt:{opt enc:oding(name)}}encoding of csv, txt and tab files; default {cmd:utf-8}, with a check (see {help convertanything##encoding:Encoding}){p_end}
+{synopt:{opt strictq:uotes}}text files: skip the stray-quote rule; keep strict quote binding, no fallback (see {help convertanything##quotes:Stray quotes}){p_end}
 
 {syntab:Cleaning}
 {synopt:{opt clean:names}}lowercase, Stata-legal, unique variable names{p_end}
@@ -236,9 +238,10 @@ encoding, the first row, code columns and output names print with or without
 {pstd}
 Text files are read with {cmd:import delimited} using {cmd:bindquote(strict)}
 and {cmd:maxquotedrows(unlimited)}, so a quoted field may contain line breaks.
-If the strict read fails, the file is read again with the default (loose)
-quoting and a note names the file.  If quoted fields span lines, a note says how
-many rows have them, because an unmatched quote also produces such a field.  The
+A stray unmatched quote is caught by the rule in
+{help convertanything##quotes:Stray quotes}.  If the strict read fails, the file
+is read again with the default (loose) quoting and a note names the file
+(unless {opt strictquotes} is given, in which case the file fails).  The
 delimiter is detected by {cmd:import delimited} as usual (comma or tab).
 
 {pstd}
@@ -334,6 +337,56 @@ text by {cmd:import delimited} anyway, so its zeros are kept without being
 listed.  Files with no zero-padded field are read once, as before.  With
 {opt destring}, every column is read as text and the ID rules of {opt destring}
 apply instead.
+
+
+{marker quotes}{...}
+{title:Remarks: stray quotes}
+
+{pstd}
+{opt strictquotes} skips the rule below: every text file is read with
+{cmd:bindquote(strict)}, with no check and no fallback to loose binding (a
+file that strict binding cannot read fails).
+
+{pstd}
+Strict binding keeps a quoted field that contains the delimiter or a line
+break in one cell, but it also treats one unmatched double quote, such as the
+inch mark in {cmd:1,5" screen,10}, as the start of a quoted field, so the rows
+after it can fold into a single cell with no error.  Unless
+{opt strictquotes} is given, {cmd:convertanything} checks the strict result:
+
+{p 8 10 2}
+o  If no string cell contains a line break, the strict result is kept.  The
+file is read once and nothing is printed.{p_end}
+{p 8 10 2}
+o  Otherwise each cell that contains a line break is split at its line
+breaks.  A line after the first {it:looks like a data row} when it holds at
+least {it:k}-1 delimiters, where {it:k} is the number of columns of the strict
+read and the delimiter is the one of comma, tab, semicolon, or pipe that
+splits the file's first line into {it:k} fields.  When {it:k} <= 2 that test is
+too weak, so the line must also start with an id-like token (digits,
+optionally after up to four letters and a {cmd:_} or {cmd:-}, such as
+{cmd:17}, {cmd:Q12}, {cmd:id_003}, or {cmd:2024-001}), and the first column of
+the file must hold such values.{p_end}
+{p 8 10 2}
+o  If any line looks like a data row, a stray quote joined rows.  A
+{cmd:WARNING} note names the file, the row and column of the strict read
+where the joined cell starts, and the strict and loose row counts, and the
+file is read again with the default loose binding; that result is saved.
+Every row survives, but the cell that holds the stray quote runs to the end of
+its line, so repair that line upstream.{p_end}
+{p 8 10 2}
+o  If no line looks like a data row, the line breaks are genuine multi-line
+text, such as a free-text survey answer: the strict result is kept and nothing
+is printed.{p_end}
+
+{pstd}
+A file with both a genuine multi-line field and a stray quote gets the
+warning and the loose result: the stray-quote reading wins, so the multi-line
+field splits too.  Repair the stray quote upstream.  A genuine multi-line field
+whose later line happens to hold {it:k}-1 delimiters (for example, a second line
+with two commas in a three-column file) is also read as a stray quote; specify
+{opt strictquotes} for such a file.  The same rule, with the same logic, is used
+by {cmd:combineall} and {cmd:cxchangelog}.
 
 
 {marker types}{...}
@@ -476,7 +529,8 @@ is skipped.
 {pstd}
 Every file gets one status line when it is skipped or fails, and notes when the
 command changed how it read the file (encoding, first row, code columns, loose
-quoting, line breaks in fields) or chose another output name.  Each note starts
+quoting after a strict read failed or a stray quote was found) or chose another
+output name.  Each note starts
 with the source path.  At the end, a summary line reports the number of files,
 how many were converted, the number of datasets saved, and how many were skipped
 and failed; the same counts are in {cmd:r()}.
@@ -589,7 +643,10 @@ even without {opt destring}.  See {help convertanything##codes:Code columns}.{p_
 {phang2}
 o  {ul:Quoted line breaks.}  Text files are read with {cmd:bindquote(strict)}, so
 a quoted field may contain line breaks; a file that strict quoting cannot read
-is read again with loose quoting and a note.{p_end}
+is read again with loose quoting and a note.  Version 1.3.1 adds the
+stray-quote rule and {opt strictquotes} (see {help convertanything##quotes:Stray quotes});
+in 1.3, a stray quote silently merged rows and only a note about line breaks
+was printed.{p_end}
 
 {pstd}
 {ul:Output names, tags and replace}

@@ -1,7 +1,17 @@
-*! version 1.3  09nov2026
+*! version 1.3.1  09nov2026
 *! convertanything: convert a file, or a folder tree of csv/txt/tab/xls/xlsx/dta/raw
 *! files, to Stata .dta datasets
 *! Author: Eric A. Booth (eric.a.booth@gmail.com)
+*!
+*! v1.3.1 changes vs v1.3:
+*!   - Text files follow a stray-quote rule (shared with combineall and
+*!     cxchangelog).  Read with bindquote(strict); when a cell has a line
+*!     break and a later line of that cell looks like a data row (at least
+*!     k-1 delimiters for k columns; for k <= 2 also an id-like leading
+*!     token), an unmatched quote such as an inch mark joined rows, so a
+*!     WARNING note names the cell and the file is read with loose binding.
+*!     Otherwise strict is kept silently (the v1.3 line-break note is gone).
+*!     New option strictquotes keeps strict binding with no fallback.
 *!
 *! v1.3 changes vs v1.2:
 *!   - Folders are detected with Mata direxists(), so folder and recursive mode
@@ -46,6 +56,7 @@ program define convertanything, rclass
         ENCoding(string)   /// encoding of text files (default utf-8, checked)
         NOFIRSTrow         /// first row is data, not variable names
         FIRSTrow           /// first row is variable names (no header detection)
+        STRICTQuotes       /// text files: strict quote binding, no fallback
     ]
     * NOFIRSTrow must be declared before FIRSTrow: in the other order syntax
     * reads "nofirstrow" as "firstrow turned off" and both locals stay empty
@@ -328,35 +339,27 @@ program define _ca_text
     }
     c_local rc `rc'
     if `rc' exit
-
-    * strict quoting keeps line breaks inside quoted fields; an unmatched
-    * quote does the same to the rest of the file, so say so
-    local nl 0
-    foreach v of varlist _all {
-        capture confirm string variable `v'
-        if _rc continue
-        quietly count if strpos(`v', char(10)) | strpos(`v', char(13))
-        local nl = max(`nl', r(N))
-    }
-    if `nl' {
-        mata: _ca_say_note(`i', "`nl' row(s) have line breaks inside quoted fields (kept); check the file if that is unexpected")
-    }
 end
 
 
 * ---------------------------------------------------------------------------
 * _ca_delim: one import delimited of the current text file (path and encoding
-* come from Mata), strict quoting first, loose quoting if that fails.
+* come from Mata) under the stray-quote rule of _cva_qguard: strict quoting,
+* and loose quoting when a cell's later line looks like a data row (WARNING
+* note unless quiet).  If the strict read fails outright, the file is read
+* again with loose quoting and a note, unless strictquotes was given.
 * Sets rc in the caller.
 * ---------------------------------------------------------------------------
 program define _ca_delim
     version 16
     args i vn sc quiet
     mata: st_local("isrc", _ca_get("isrc")); st_local("enc", _ca_get("isenc"))
-    capture import delimited using `"`macval(isrc)'"', clear `vn' `sc' ///
-        encoding(`"`macval(enc)'"') bindquote(strict) maxquotedrows(unlimited)
+    mata: st_local("strictquotes", _ca_get("strictquotes"))
+    local qg_status
+    capture _cva_qguard `"`macval(isrc)'"', `vn' `sc' ///
+        encoding(`"`macval(enc)'"') nowarn `strictquotes'
     local rc = _rc
-    if `rc' {
+    if `rc' & "`strictquotes'" == "" {
         local rc1 = `rc'
         capture import delimited using `"`macval(isrc)'"', clear `vn' `sc' ///
             encoding(`"`macval(enc)'"')
@@ -364,6 +367,11 @@ program define _ca_delim
         if !`rc' & "`quiet'" == "" {
             mata: _ca_say_note(`i', "strict quote parsing failed (rc=`rc1'), read again with default (loose) quoting")
         }
+    }
+    else if !`rc' & "`qg_status'" == "stray" & "`quiet'" == "" {
+        local km1 = `qg_k' - 1
+        local qgmsg `"WARNING: stray-quote check: in the strict read, the quoted cell in row `qg_obs', column `qg_var' runs on into lines that look like data rows (each has at least `km1' delimiter(s)), so an unmatched quote, such as the inch mark in 5" screen, joined rows; strict quote binding read `qg_nstrict' row(s), loose binding read `qg_nloose' row(s); the loose result is used.  If those lines are text inside one quoted field, specify strictquotes"'
+        mata: _ca_say_note(`i', st_local("qgmsg"))
     }
     c_local rc `rc'
 end
@@ -643,7 +651,8 @@ void _ca_init()
     __ca_opt = asarray_create()
     keys = ("using", "saving", "home", "extension", "encoding", "recursive",
             "allsheets", "replace", "verbose", "compress", "cleannames",
-            "destring", "nofirstrow", "firstrow", "skipgiven", "encgiven")
+            "destring", "nofirstrow", "firstrow", "skipgiven", "encgiven",
+            "strictquotes")
     for (k = 1; k <= cols(keys); k++) asarray(__ca_opt, keys[k], st_local(keys[k]))
     asarray(__ca_opt, "input", "")
     asarray(__ca_opt, "savabs", "")
@@ -1516,4 +1525,249 @@ void _ca_rawsniff(real scalar i)
     st_local("rawvars", (mode == "free" ? strtrim(vars) : ""))
 }
 
+end
+
+
+* ---------------------------------------------------------------------------
+* _cva_qguard: import a delimited file under the stray-quote rule.  The same
+* helper, with the same logic, ships in combineall, cxchangelog and
+* convertanything (only the _cva_ name prefix differs).
+*   1. Import once with bindquote(strict) maxquotedrows(unlimited), so a
+*      quoted field that spans lines stays one cell.
+*   2. strictquotes: keep the strict result; no check, no fallback.
+*   3. Fast path: if no string cell contains a line break, keep the strict
+*      result.  The file is read once and nothing is printed.
+*   4. Otherwise split each cell that contains a line break at its line
+*      breaks.  A line after the first looks like a data row of this file
+*      when it holds at least k-1 delimiters (k = number of columns of the
+*      strict import).  When k <= 2 that is too weak, so the line must also
+*      start with an id-like token (digits, optionally after up to four
+*      letters and a _ or -, such as 17, Q12, id_003 or 2024-001) and the
+*      file's first column must hold such values.
+*      - Some line looks like a data row: an unmatched quote (such as the
+*        inch mark in 5" screen) joined rows.  Warn, naming the file, the
+*        row and column where the joined cell starts, and the strict and
+*        loose row counts, then import again with the default loose binding
+*        and keep that result.  This also holds when the file has genuine
+*        multi-line fields as well: the stray-quote reading wins.
+*      - No line does: the breaks are genuine multi-line text.  Keep the
+*        strict result and print nothing.
+* Leaves in the caller: qg_status (clean, multiline, stray or forced),
+* qg_nread (imports run, 1 or 2), qg_nstrict, qg_nloose, qg_k, qg_obs and
+* qg_var.  nowarn suppresses the warning (the caller prints its own).
+* ---------------------------------------------------------------------------
+program define _cva_qguard
+    version 16
+    gettoken fname 0 : 0, parse(" ,")
+    syntax , [STRICTQuotes NOWARN DELIMiters(string asis) *]
+    local dl `delimiters'
+    if `"`delimiters'"' != "" local options `"`options' delimiters(`delimiters')"'
+    c_local qg_status ""
+    c_local qg_nloose ""
+    c_local qg_obs ""
+    c_local qg_var ""
+    quietly import delimited using `"`macval(fname)'"', `options' ///
+        bindquote(strict) maxquotedrows(unlimited) clear
+    local nstrict = _N
+    local k = c(k)
+    c_local qg_nread 1
+    c_local qg_nstrict `nstrict'
+    c_local qg_k `k'
+    if "`strictquotes'" != "" {
+        c_local qg_status forced
+        exit
+    }
+    mata: _cva_qgscan(st_local("fname"), st_local("dl"))
+    if "`qg_ml'" == "0" {
+        c_local qg_status clean
+        exit
+    }
+    if "`qg_hit'" == "0" {
+        c_local qg_status multiline
+        exit
+    }
+    quietly import delimited using `"`macval(fname)'"', `options' clear
+    local nloose = _N
+    c_local qg_status stray
+    c_local qg_nread 2
+    c_local qg_nloose `nloose'
+    c_local qg_obs `qg_obs'
+    c_local qg_var `qg_var'
+    if "`nowarn'" == "" {
+        di as err "warning:" as txt `" stray-quote check on file `fname'"'
+        di as txt "  In the strict read, the quoted cell in row " as res `qg_obs' ///
+            as txt ", column " as res "`qg_var'" as txt " runs on into lines"
+        di as txt "  that look like data rows (each has at least " as res `k' - 1 ///
+            as txt `" delimiter(s)): an unmatched quote, such as the inch mark in 5" screen, joined rows."'
+        di as txt "  strict quote binding read " as res `nstrict' as txt ///
+            " row(s); loose binding read " as res `nloose' as txt ///
+            " row(s); using the loose result."
+        di as txt "  If those lines are text inside one quoted field, " ///
+            "specify {bf:strictquotes} to keep strict binding."
+    }
+end
+
+mata:
+// stray-quote rule (see _cva_qguard): sets locals qg_ml (some string cell
+// has a line break), qg_hit (some later line looks like a data row), and
+// qg_obs/qg_var (the first such cell: lowest row, then leftmost column)
+void _cva_qgscan(string scalar fname, string scalar dl)
+{
+    real scalar k, j, i, r, anchor, bestr, bestj, found
+    real vector ix
+    string colvector s
+    string scalar d
+
+    st_local("qg_ml", "0")
+    st_local("qg_hit", "0")
+    k = st_nvar()
+    bestr = bestj = .
+    found = 0
+    anchor = 1
+    d = ","
+    for (j = 1; j <= k; j++) {
+        if (!st_isstrvar(j)) continue
+        s = st_sdata(., j)
+        ix = selectindex((strpos(s, char(10)) :+ strpos(s, char(13))) :> 0)
+        if (length(ix) == 0) continue
+        if (!found) {
+            found = 1
+            st_local("qg_ml", "1")
+            d = _cva_qgdelim(fname, dl, k)
+            if (k <= 2) anchor = _cva_qganchor()
+        }
+        if (!anchor) return
+        for (i = 1; i <= length(ix); i++) {
+            r = ix[i]
+            if (r >= bestr) break
+            if (_cva_qgrowline(s[r], d, k)) {
+                bestr = r
+                bestj = j
+                break
+            }
+        }
+    }
+    if (bestr < .) {
+        st_local("qg_hit", "1")
+        st_local("qg_obs", strofreal(bestr))
+        st_local("qg_var", st_varname(bestj))
+    }
+}
+
+// 1 if a line after the first line of cell c looks like a data row
+real scalar _cva_qgrowline(string scalar c, string scalar d, real scalar k)
+{
+    string scalar t, line
+    real scalar p, first
+
+    t = subinstr(c, char(13) + char(10), char(10))
+    t = subinstr(t, char(13), char(10))
+    first = 1
+    while (1) {
+        p = strpos(t, char(10))
+        if (p) {
+            line = substr(t, 1, p - 1)
+            t = substr(t, p + 1, .)
+        }
+        else line = t
+        if (!first) {
+            if (_cva_qgcount(line, d) >= k - 1) {
+                if (k > 2) return(1)
+                if (_cva_qgidlike(_cva_qglead(line, d, k))) return(1)
+            }
+        }
+        first = 0
+        if (!p) return(0)
+    }
+    return(0)
+}
+
+// the delimiter: delimiters() when given, else the candidate (comma, tab,
+// semicolon, pipe) that splits the first line of the file into k fields,
+// else the most frequent candidate on that line, else comma
+string scalar _cva_qgdelim(string scalar fname, string scalar dl, real scalar k)
+{
+    real scalar fh, j, n, best, bestn, p
+    string scalar buf
+    string rowvector cand
+
+    if (dl == char(92) + "t") return(char(9))
+    if (dl != "") return(dl)
+    cand = (",", char(9), ";", "|")
+    fh = _fopen(fname, "r")
+    if (fh < 0) return(",")
+    buf = fread(fh, 65536)
+    fclose(fh)
+    if (buf == J(0, 0, "")) return(",")
+    if (substr(buf, 1, 3) == char(239) + char(187) + char(191)) buf = substr(buf, 4, .)
+    p = strpos(buf, char(10))
+    if (p) buf = substr(buf, 1, p - 1)
+    p = strpos(buf, char(13))
+    if (p) buf = substr(buf, 1, p - 1)
+    best = 1
+    bestn = 0
+    for (j = 1; j <= cols(cand); j++) {
+        n = _cva_qgcount(buf, cand[j])
+        if (k > 1 & n == k - 1) return(cand[j])
+        if (n > bestn) {
+            best = j
+            bestn = n
+        }
+    }
+    return(cand[best])
+}
+
+// number of delimiter characters in s (each character of d counts)
+real scalar _cva_qgcount(string scalar s, string scalar d)
+{
+    real scalar j, n
+    n = 0
+    for (j = 1; j <= strlen(d); j++) {
+        n = n + strlen(s) - strlen(subinstr(s, substr(d, j, 1), ""))
+    }
+    return(n)
+}
+
+// the first field of a line (the whole line when k == 1)
+string scalar _cva_qglead(string scalar line, string scalar d, real scalar k)
+{
+    real scalar j, p, q
+    if (k == 1) return(line)
+    p = strlen(line) + 1
+    for (j = 1; j <= strlen(d); j++) {
+        q = strpos(line, substr(d, j, 1))
+        if (q & q < p) p = q
+    }
+    return(substr(line, 1, p - 1))
+}
+
+// 1 if s is an id-like token: 17, Q12, id_003, 2024-001 (quotes allowed)
+real scalar _cva_qgidlike(string scalar s)
+{
+    string scalar t
+    t = strtrim(s)
+    if (strlen(t) >= 2 & substr(t, 1, 1) == char(34) & substr(t, -1, 1) == char(34)) {
+        t = substr(t, 2, strlen(t) - 2)
+    }
+    return(ustrregexm(t, "^[A-Za-z]{0,4}[_-]?[0-9]+([._-][0-9]+)*$"))
+}
+
+// 1 if the first column holds id-like values (the file's row pattern,
+// needed when k <= 2): any nonmissing number, or any string whose first
+// line is id-like
+real scalar _cva_qganchor()
+{
+    real scalar i, p
+    string colvector s
+    string scalar t
+    if (!st_isstrvar(1)) return(missing(st_data(., 1)) < st_nobs())
+    s = st_sdata(., 1)
+    for (i = 1; i <= rows(s); i++) {
+        t = subinstr(s[i], char(13), char(10))
+        p = strpos(t, char(10))
+        if (p) t = substr(t, 1, p - 1)
+        if (_cva_qgidlike(t)) return(1)
+    }
+    return(0)
+}
 end
