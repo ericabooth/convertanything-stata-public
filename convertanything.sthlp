@@ -558,7 +558,7 @@ memory and {opt clear} was not given.
 {phang2}{cmd:      allsheets cleannames destring compress clear replace}{p_end}
 
 {pstd}Only the CSV files of one folder, flat output{p_end}
-{phang2}{cmd:. convertanything using "C:/Data/Comptroller", extension(csv) saving("C:/Stata_Data") replace clear}{p_end}
+{phang2}{cmd:. convertanything using "downloads", extension(csv) saving("stata_data") replace clear}{p_end}
 
 {pstd}Rerun after new files arrive: existing outputs are skipped{p_end}
 {phang2}{cmd:. convertanything using "raw", recursive saving("converted") clear}{p_end}

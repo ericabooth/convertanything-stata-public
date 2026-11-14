@@ -56,8 +56,8 @@ convertanything using "mydata.csv", replace clear cleannames destring compress
 **One folder, CSV files only, flat output:**
 
 ```stata
-convertanything using "C:/Data/Comptroller", extension(csv) ///
-    saving("C:/Stata_Data") replace clear
+convertanything using "downloads", extension(csv) ///
+    saving("stata_data") replace clear
 ```
 
 **Recursive, with progress lines:**
